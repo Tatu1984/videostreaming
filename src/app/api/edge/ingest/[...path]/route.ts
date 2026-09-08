@@ -1,24 +1,23 @@
 import { NextResponse } from 'next/server'
 import { getMediaStore, safeKey, safeName, contentTypeFor, cacheControlFor } from '@/lib/media/store'
+import { findByIngestKey } from '@/lib/repo'
+import { verifyToken } from '@/lib/auth'
+import { readSession } from '@/lib/auth'
 
 /**
- * Edge HLS ingest + playback — the bridge between the Edge Agent and the browser.
+ * Edge HLS ingest + playback — multi-tenant.
  *
- *   PUT/DELETE /api/edge/ingest/<streamKey>/<file>   ← Edge Agent (Bearer token)
- *   GET        /api/edge/ingest/<streamKey>/<file>   ← browser  (credential-free)
+ *   PUT/DELETE /api/edge/ingest/<ingestKey>/<file>   ← Edge Agent
+ *       Authorization: Bearer <that camera's ingest token>
+ *   GET        /api/edge/ingest/<ingestKey>/<file>   ← browser (OWNER only)
  *
- * The Edge Agent's ffmpeg uploads HLS files via outbound HTTP PUT (NAT-friendly).
- * Bytes are written to the configured media store (Cloudflare R2 at scale, or a
- * local disk for dev). Playback is credential-free (the URL is the capability),
- * matching the portal's security model. Path traversal and non-HLS files are
- * rejected. When R2 has a public/CDN base, GET redirects the browser straight to
- * the CDN so segment bytes never flow through this function — the key to serving
- * many viewers cheaply.
+ * Upload: the ingestKey identifies WHICH user's camera this is; the Bearer token
+ * must match that camera's stored token hash. So each camera authenticates
+ * itself, and video lands in the media store (R2/fs) under its own key.
  *
- * INGEST AUTH: set EDGE_INGEST_TOKEN. Uploads must send
- *   Authorization: Bearer <EDGE_INGEST_TOKEN>
- * (matching the token pasted into the Edge Agent's Portal Connection). If the
- * env var is unset, uploads are open — only acceptable for local/dev.
+ * Playback: gated to the camera's OWNER. The viewer must be logged in AND own the
+ * camera that owns this ingestKey — so user A can never watch user B's feed even
+ * with the URL.
  */
 
 export const dynamic = 'force-dynamic'
@@ -26,12 +25,6 @@ export const dynamic = 'force-dynamic'
 function bearer(req: Request): string | null {
   const h = req.headers.get('authorization') || ''
   return h.startsWith('Bearer ') ? h.slice(7) : null
-}
-
-function ingestAuthorized(req: Request): boolean {
-  const token = process.env.EDGE_INGEST_TOKEN
-  if (!token) return true // no token configured → open (dev only)
-  return bearer(req) === token
 }
 
 function parse(parts: string[]): { key: string; file: string } | null {
@@ -43,9 +36,14 @@ function parse(parts: string[]): { key: string; file: string } | null {
 }
 
 async function handleWrite(req: Request, parts: string[]) {
-  if (!ingestAuthorized(req)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   const p = parse(parts)
   if (!p) return NextResponse.json({ error: 'bad path' }, { status: 400 })
+
+  const cam = await findByIngestKey(p.key)
+  const tok = bearer(req)
+  if (!cam || !tok || !verifyToken(tok, cam.ingest_token_hash)) {
+    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  }
 
   const store = await getMediaStore()
   const body = new Uint8Array(await req.arrayBuffer())
@@ -58,33 +56,52 @@ export async function PUT(req: Request, ctx: { params: Promise<{ path: string[] 
   const { path } = await ctx.params
   return handleWrite(req, path)
 }
-
-// Some ffmpeg builds POST instead of PUT — accept both.
 export const POST = PUT
 
 export async function DELETE(req: Request, ctx: { params: Promise<{ path: string[] }> }) {
-  if (!ingestAuthorized(req)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   const { path } = await ctx.params
   const p = parse(path)
   if (!p) return NextResponse.json({ error: 'bad path' }, { status: 400 })
+  const cam = await findByIngestKey(p.key)
+  const tok = bearer(req)
+  if (!cam || !tok || !verifyToken(tok, cam.ingest_token_hash)) {
+    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  }
   const store = await getMediaStore()
   await store.delete(p.key, p.file)
   return new NextResponse(null, { status: 204 })
 }
 
-// Browser playback — credential-free.
+// Playback — OWNER only.
 export async function GET(req: Request, ctx: { params: Promise<{ path: string[] }> }) {
   const { path } = await ctx.params
   const p = parse(path)
   if (!p) return NextResponse.json({ error: 'bad path' }, { status: 400 })
 
+  // Must be logged in AND own the camera behind this ingest key.
+  const session = await readSession()
+  if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  const cam = await findByIngestKey(p.key)
+  if (!cam || cam.user_id !== session.userId) {
+    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+  }
+
   const store = await getMediaStore()
   const res = await store.get(p.key, p.file)
   if (!res.ok) return NextResponse.json({ error: 'not found' }, { status: 404 })
 
-  // R2 with a CDN base: send the browser straight to the CDN (no bytes through us).
-  if (res.redirectUrl) {
-    return NextResponse.redirect(res.redirectUrl, 302)
+  // NOTE: even with an R2 public base, we stream through here so playback stays
+  // owner-gated (a public CDN URL would bypass the ownership check). For a
+  // per-user-private feed this is the correct trade-off.
+  if (res.redirectUrl && !res.body) {
+    const r = await fetch(res.redirectUrl, { cache: 'no-store' })
+    if (!r.ok) return NextResponse.json({ error: 'not found' }, { status: 404 })
+    const buf = new Uint8Array(await r.arrayBuffer())
+    const { type, kind } = contentTypeFor(p.file)
+    return new NextResponse(buf, {
+      status: 200,
+      headers: { 'Content-Type': type, 'Cache-Control': cacheControlFor(kind) },
+    })
   }
 
   const { type, kind } = contentTypeFor(p.file)
@@ -93,7 +110,6 @@ export async function GET(req: Request, ctx: { params: Promise<{ path: string[] 
     headers: {
       'Content-Type': res.contentType || type,
       'Cache-Control': cacheControlFor(kind),
-      'Access-Control-Allow-Origin': '*',
     },
   })
 }

@@ -120,3 +120,22 @@ a { color: inherit; text-decoration: none; }
 /* Delete affordance on a tile */
 .tile .meta .del { cursor: pointer; color: var(--muted); border: 1px solid var(--border); background: var(--panel-2); border-radius: 6px; padding: 2px 7px; font-size: 12px; }
 .tile .meta .del:hover { color: #e9c2c2; border-color: #4a2a2a; }
+
+/* Auth page */
+.auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.auth-card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; width: min(400px, 96vw); padding: 28px; display: flex; flex-direction: column; gap: 14px; }
+.auth-card h1 { margin: 0; font-size: 20px; }
+.auth-sub { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
+.auth-card label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+.auth-card input { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; font-size: 14px; outline: none; }
+.auth-card input:focus { border-color: var(--accent-dim); }
+.auth-card .btn { padding: 10px; font-size: 14px; justify-content: center; }
+.auth-card .err { color: #e9c2c2; background: #2a1a1a; border: 1px solid #4a2a2a; border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.auth-switch { color: var(--muted); font-size: 13px; text-align: center; }
+.auth-switch button { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 13px; padding: 0; }
+
+/* Add-camera credentials */
+.note-box { background: #16281f; border: 1px solid var(--accent-dim); color: #cdeede; border-radius: 8px; padding: 10px 12px; font-size: 13px; }
+.copy-row { display: flex; gap: 8px; }
+.copy-row input { flex: 1; font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+.copy-row .btn { padding: 6px 12px; }

@@ -1,24 +1,62 @@
 import { NextResponse } from 'next/server'
-import { listCameras } from '@/lib/store'
-import { checkAll } from '@/lib/status'
+import { readSession } from '@/lib/auth'
+import { createCamera, listCameras } from '@/lib/repo'
+import { toViews } from '@/lib/status'
 
-// GET /api/cameras
-//   → { cameras: CameraWithStatus[] }
-// Public, credential-free. Returns each camera's id/name/group/hlsUrl plus a
-// live status. Carries NO secrets (no RTSP URL, no token). `?status=false` skips
-// the (slower) liveness probe and returns registry entries only.
 export const dynamic = 'force-dynamic'
 
-export async function GET(request: Request) {
-  const url = new URL(request.url)
-  const withStatus = url.searchParams.get('status') !== 'false'
-  const cams = await listCameras()
-
-  if (!withStatus) {
-    return NextResponse.json({
-      cameras: cams.map((c) => ({ ...c, status: 'UNKNOWN', available: false, checkedAt: '' })),
-    })
+// Base URL for building playback/ingest URLs shown to the operator.
+function baseUrl(request: Request): string {
+  const env = process.env.NEXT_PUBLIC_APP_URL
+  if (env) return env.replace(/\/+$/, '')
+  // Fall back to the request origin.
+  try {
+    return new URL(request.url).origin
+  } catch {
+    return ''
   }
-  const checked = await checkAll(cams)
-  return NextResponse.json({ cameras: checked })
+}
+
+// GET /api/cameras → the logged-in user's cameras + live status. 401 if not auth.
+export async function GET(request: Request) {
+  const s = await readSession()
+  if (!s) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+  const cams = await listCameras(s.userId)
+  const views = await toViews(cams, baseUrl(request))
+  return NextResponse.json({ cameras: views })
+}
+
+// POST /api/cameras  { name, group? } → creates a camera OWNED by the user and
+// returns the one-time ingest token + the exact ingest URL to paste into the
+// Edge Agent. The token is shown ONCE (only its hash is stored).
+export async function POST(request: Request) {
+  const s = await readSession()
+  if (!s) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+
+  let body: { name?: string; group?: string }
+  try {
+    body = await request.json()
+  } catch {
+    return NextResponse.json({ error: 'invalid JSON' }, { status: 400 })
+  }
+  const name = (body.name || '').trim()
+  if (!name) return NextResponse.json({ error: 'name is required' }, { status: 400 })
+  const group = (body.group || '').trim() || null
+
+  const cam = await createCamera(s.userId, name, group)
+  const base = baseUrl(request)
+  return NextResponse.json(
+    {
+      camera: { id: cam.id, name: cam.name, group: cam.group, ingestKey: cam.ingestKey },
+      // Everything the operator needs to configure their Edge Agent — shown ONCE.
+      edgeAgent: {
+        ingestUrl: base, // Portal Connection → Ingest URL
+        ingestToken: cam.ingestToken, // Portal Connection → Token (shown once!)
+        // The camera's full publish target (agent uses ingestUrl + this key):
+        publishUrl: `${base}/api/edge/ingest/${cam.ingestKey}/index.m3u8`,
+        cameraId: cam.ingestKey,
+      },
+    },
+    { status: 201 }
+  )
 }

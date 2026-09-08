@@ -1,16 +1,16 @@
 'use client'
 
 import { useEffect } from 'react'
-import type { CameraWithStatus } from '@/lib/types'
+import type { CameraView } from '@/lib/types'
 import HlsPlayer from './HlsPlayer'
 import StatusBadge from './StatusBadge'
 
 interface Props {
-  camera: CameraWithStatus | null
+  camera: CameraView | null
   onClose: () => void
 }
 
-/** Full-size single-camera view. Streams at higher priority than grid tiles. */
+/** Full-size single-camera view. */
 export default function FocusView({ camera, onClose }: Props) {
   useEffect(() => {
     if (!camera) return

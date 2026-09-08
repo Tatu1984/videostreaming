@@ -12,7 +12,9 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1127.0",
+    "@neondatabase/serverless": "0.10.4",
     "hls.js": "1.5.13",
+    "jose": "5.9.6",
     "next": "16.3.4",
     "react": "19.2.0",
     "react-dom": "19.2.0"

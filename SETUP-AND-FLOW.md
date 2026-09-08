@@ -1,228 +1,155 @@
 # End-to-End Flow — Live Feed Portal + Edge Agent
 
-This is the complete operator guide: the whole path from a CCTV camera on a
-private network to a live feed in the portal, plus how to build/share the macOS
-Edge Agent and where to host things.
+The complete path from a CCTV camera on a private network to a live feed in the
+portal, with per-user accounts. Each user signs in, adds their own cameras, and
+sees only their own feeds.
 
 ```
-CCTV camera ──RTSP──▶ Edge Agent (Mac app) ──HTTP PUT──▶ Ingest (media host) ──HTTP GET──▶ Portal (browser)
-   private LAN            friend's MacBook        outbound HTTPS       real disk / storage      Vercel etc.
+CCTV camera ──RTSP──▶ Edge Agent (desktop app) ──HTTP PUT──▶ Portal /api/edge/ingest ──▶ Cloudflare R2
+   private LAN           user's machine            outbound HTTPS      (on Vercel)              (video store)
+                                                                              │
+                                       user signs in ──▶ Portal ──owner-gated playback──┘ ──▶ browser
 ```
 
-There are three moving parts, hosted in three different places:
+Three parts:
 
 | Part | What it is | Where it runs |
 |------|-----------|---------------|
-| **Portal** (this project) | The web UI + camera registry API | A web host (Vercel, or a VM) |
-| **Ingest / media** | Receives the agent's HLS PUTs, stores & serves segments | A host **with a real disk** (NOT Vercel's ephemeral FS) — see §4 |
-| **Edge Agent** | Desktop app that reads cameras and pushes them out | The customer's Mac/PC on the camera LAN |
+| **Portal** (this project) | Auth + per-user camera management + ingest + playback | Vercel |
+| **Database** | Users + cameras (Neon Postgres) | Neon (serverless) |
+| **Video store** | HLS segments | Cloudflare R2 |
+| **Edge Agent** | Desktop app that reads cameras and pushes them out | The user's machine on the camera LAN |
 
 ---
 
-## 1. Adding a camera **in the portal**
+## 1. How a user uses the portal
 
-The portal has an "＋ Add camera" button (top-right).
+1. **Sign up / sign in** at `/login` (email + password). No access without login.
+2. Click **＋ Add camera**, give it a name (+ optional group). The portal creates
+   the camera **on your account** and shows, once:
+   - **Ingest URL** — paste into the Edge Agent's Portal Connection.
+   - **Token** — paste into the Edge Agent's Portal Connection (shown once!).
+   - **Camera ID** — use this as the camera id in the Edge Agent.
+3. Configure the Edge Agent with those values (next section) and start it.
+4. The camera tile flips **ONLINE** and plays — **only in your account**. Another
+   user signing in sees only *their* cameras.
 
-1. Click **＋ Add camera**.
-2. Fill in:
-   - **Camera ID** — stable id, e.g. `cam-001` (should match the Edge Agent's camera id / stream key).
-   - **Name** — friendly label.
-   - **Group** — optional (for filtering).
-   - **HLS URL** — the credential-free playlist the ingest serves, e.g.
-     `https://<your-ingest-host>/api/edge/ingest/cam-001/index.m3u8`
-   - **Admin token** — only if the deployment set `LIVEFEED_ADMIN_TOKEN` (below).
-3. Save. The camera appears in the grid; it shows **OFFLINE** until the Edge
-   Agent actually starts pushing that stream, then flips **ONLINE** and plays.
+Delete a camera with the **✕** on its tile. Sign out from the header.
 
-Remove a camera with the **✕** on its tile.
-
-**Auth model:** viewing the portal needs no login (by design — the AI dev just
-opens it). *Adding/removing* is a write, so it's gated by an optional admin
-token. Set `LIVEFEED_ADMIN_TOKEN` on the deployment and the Add form will ask
-for it once (remembered in the browser). If you don't set it, anyone with the
-URL can edit the list — only do that for a private/internal URL.
-
-You can also register cameras without the UI:
-- `POST /api/admin/cameras` (curl) — see the portal README.
-- `CAMERAS_JSON` env var — the whole registry as JSON (best for serverless).
+**Isolation guarantee:** every camera belongs to the user who created it. All
+camera list/view/delete queries are scoped by the logged-in user, and playback
+is owner-gated — user A can never see user B's feed, even with the URL.
 
 ---
 
-## 2. The Edge Agent — GUI-first, portal-agnostic
+## 2. The Edge Agent (desktop, GUI-first)
 
-The Edge Agent is a **desktop app**. The operator:
+The Edge Agent runs on the user's machine, **on the same LAN as their cameras**.
 
-1. **Links it to a portal ONCE** — in the app's **Portal** section, paste:
-   - **Ingest URL** — where video is PUT (your ingest host, §4).
-   - **Token** — the portal's ingest token.
-   Click **Save connection**.
-2. **Adds cameras** — each with a stable **Camera ID** and the camera's local
-   **RTSP URL**. Cameras inherit the Portal Connection, so you don't repeat the
-   URL/token per camera (you *can* override per camera if needed).
-3. **Start All** — the agent probes each camera and pushes its feed outbound to
-   the linked portal.
+1. In the app's **Portal** section, paste the **Ingest URL** + **Token** the
+   portal gave you when you added the camera, and Save.
+2. Add a camera in the agent using the **Camera ID** from the portal and the
+   camera's local **RTSP URL** (e.g. `rtsp://user:pass@192.168.1.100:554/...`).
+3. **Start All.** The agent probes the camera and pushes its feed outbound to the
+   portal. Camera passwords never leave the machine.
 
-To point the agent at a **different portal**, just paste that portal's URL +
-token in the Portal section and save. Nothing else changes — the agent starts
-feeding the new portal. The camera passwords never leave the Mac; only
-credential-free HLS reaches the portal/browser.
+The agent is outbound-only (works behind NAT/CGNAT, no inbound ports). See the
+edge-agent build/run instructions in §3.
 
 ---
 
-## 3. Building the macOS (Apple Silicon / M4) app — for your friend
+## 3. Building the macOS (Apple Silicon / M4) app
 
-The desktop GUI uses native macOS frameworks, so **it must be built on a Mac**
-(it can't be cross-built from Linux). Your friend does this once and can then
-share the resulting `.app` with others.
+The GUI must be built on a Mac (native frameworks; can't cross-build from Linux).
 
-### Files to send your friend
-Send the **entire `edge-agent/` folder** from the Smart-Parking repo (it's ~13
-MB; it's the Go source the build compiles). The relevant build kit inside it:
-- `build/macos/build-macos.sh` — the build script
-- `build/macos/install.sh` — installs the `.app` to /Applications
-- `build/macos/README.txt` — end-user instructions
-
-### What your friend runs (on his M4 Mac)
+Send your friend the **`edge-agent/` folder** from the Smart-Parking repo. On his
+Mac:
 ```bash
-# one-time prerequisites
-xcode-select --install                 # Apple build tools
-brew install go ffmpeg                  # Go 1.22+ and FFmpeg
-
-# build the app (from inside the edge-agent/ folder)
+xcode-select --install
+brew install go ffmpeg
 cd edge-agent
-./build/macos/build-macos.sh
+./build/macos/build-macos.sh          # → build/macos/dist/SParking Edge Agent.app
+cd build/macos/dist && ./install.sh   # installs to /Applications
 ```
-This produces **`build/macos/dist/SParking Edge Agent.app`** — a double-clickable
-app bundling both the GUI and the background worker, built for `arm64` (M4).
+First launch: right-click → Open → Open (once; the build is unsigned).
 
-### Installing / running
-```bash
-cd build/macos/dist
-./install.sh          # copies the .app to /Applications
-```
-First launch: right-click the app → **Open** → **Open** (once), because the
-build isn't signed with an Apple Developer ID. Then follow the app's on-screen
-flow (Portal Connection → Add camera → Start All).
-
-### Sharing the app with OTHER people
-Your friend can zip and send `SParking Edge Agent.app`:
-```bash
-cd build/macos/dist
-ditto -c -k --keepParent "SParking Edge Agent.app" SParkingEdgeAgent.zip
-```
-Recipients still need **FFmpeg** (`brew install ffmpeg`) and the right-click →
-Open step. For a smoother share (no Gatekeeper warning), sign + notarize with an
-Apple Developer ID — the commands are printed at the end of `build-macos.sh`.
-That's optional and needs a paid Apple Developer account.
-
-> Note: every recipient's Mac must be **on the same local network as their
-> cameras** — that's the whole point of the edge agent (it reaches the private
-> cameras and pushes outbound; the cloud never reaches into their network).
+Share the `.app` with others by zipping it (`ditto -c -k --keepParent "SParking
+Edge Agent.app" app.zip`); recipients need `brew install ffmpeg` and must be on
+the same LAN as their cameras. Optional signing/notarization commands are printed
+by `build-macos.sh`. The worker also cross-builds for Linux/Windows.
 
 ---
 
-## 4. Media architecture — Vercel + Cloudflare R2 (built in)
+## 4. Media storage — Cloudflare R2
 
-The portal **includes the ingest** at `/api/edge/ingest/[...path]`. It receives
-the Edge Agent's HLS uploads and stores them in a **media store**. Vercel's own
-filesystem is ephemeral, so at scale the store is **Cloudflare R2** (S3-
-compatible object storage — durable, effectively unlimited, **zero egress
-fees**, CDN-frontable). This is the 10K design and it is implemented.
+The portal's `/api/edge/ingest` route receives the agent's HLS uploads and stores
+them in **Cloudflare R2** (durable, unlimited, zero egress fees — the 10K design).
+Playback is **served through the app and owner-gated** (a public CDN URL would
+bypass the per-user ownership check, so playback intentionally streams through
+the app). Segments are stored with immutable cache headers for efficiency.
 
-```
-Edge Agent ──PUT (Bearer)──▶ Vercel: /api/edge/ingest ──▶ Cloudflare R2 ──▶ CDN ──▶ browser GET
-```
-
-- **Ingest (write):** the agent PUTs `index.m3u8` + `.ts` to the portal's ingest
-  route with a Bearer token (`EDGE_INGEST_TOKEN`). The route writes them to R2
-  with correct content-types and cache headers (playlists no-cache, segments
-  immutable — so a CDN serves the fan-out and R2 stays cool).
-- **Playback (read):** the browser GETs `/api/edge/ingest/<key>/index.m3u8`.
-  When `R2_PUBLIC_BASE` (a CDN/public bucket URL) is set, the route **redirects
-  the browser straight to the CDN** — segment bytes never pass through the
-  serverless function, which is what makes many viewers cheap and fast.
-
-**Why this scales to 10K:** R2 handles massive parallel writes; the CDN absorbs
-read fan-out; the Vercel function only handles small control traffic (auth +
-redirects), not video bytes. There is no single disk or box in the hot path.
-
-**Backend switch** — `MEDIA_BACKEND`:
-- `r2` → Cloudflare R2 (production / scale / Vercel).
-- `fs` (default) → local disk, for `npm run dev` or a single VM. Same code path;
-  just a different store.
-
-**The Edge Agent is unchanged and backend-agnostic** — it always does outbound
-HTTP PUT to whatever Ingest URL + token you paste into its Portal Connection.
-
-### One-time Cloudflare R2 setup
-1. Cloudflare dashboard → **R2** → **Create bucket** (e.g. `live-feed-hls`).
-2. **Manage R2 API Tokens** → create a token with **Object Read & Write** on
-   that bucket. Note the **Access Key ID**, **Secret Access Key**, and your
-   **Account ID**.
-3. **Public access / CDN** (recommended): enable the bucket's public `r2.dev`
-   URL, or (better) connect a **custom domain** to the bucket. That URL is your
-   `R2_PUBLIC_BASE`. With a custom domain you also get Cloudflare's CDN in front
-   for free — the ideal setup for many viewers.
+### One-time R2 setup
+1. Cloudflare → **R2** → **Create bucket** (e.g. `cctv-streaming`).
+2. **Manage R2 API Tokens** → create **Object Read & Write** token → note the
+   Access Key ID, Secret Access Key, and your Account ID.
+3. No public bucket URL is needed (playback goes through the app for privacy).
 
 ---
 
-## 5. Deploying to Vercel — the exact steps
+## 5. One-time Neon (database) setup
 
-**The portal + ingest are Vercel-ready** (build passes, CSP production-safe, R2
-replaces the ephemeral filesystem). Deploy:
+1. Create a project at neon.tech → copy the **pooled** connection string.
+2. That's your `DATABASE_URL`. The portal creates its tables automatically on
+   first use (no migration step).
+
+---
+
+## 6. Deploying to Vercel — exact env vars
 
 ```bash
 cd live-feed-only
-vercel            # or connect the repo in the Vercel dashboard, then deploy
+vercel        # or connect the repo in the Vercel dashboard
 ```
 
-Set these **Environment Variables** in the Vercel project (Settings → Environment
-Variables), for Production (and Preview if you use it):
+Set these **Environment Variables** (Production, + Preview if used):
 
 | Variable | Value / purpose |
 |----------|-----------------|
+| `DATABASE_URL` | Neon pooled connection string |
+| `AUTH_SECRET` | long random string — `openssl rand -hex 32` (signs session cookies) |
+| `NEXT_PUBLIC_APP_URL` | your deployment URL, e.g. `https://your-app.vercel.app` (used to build the ingest URLs shown to users) |
 | `MEDIA_BACKEND` | `r2` |
-| `EDGE_INGEST_TOKEN` | a strong random string. **Paste the same value into the Edge Agent's Portal Connection "Token".** Guards uploads. |
-| `R2_ACCOUNT_ID` | your Cloudflare account id |
-| `R2_ACCESS_KEY_ID` | R2 API token access key |
-| `R2_SECRET_ACCESS_KEY` | R2 API token secret |
-| `R2_BUCKET` | e.g. `live-feed-hls` |
-| `R2_PUBLIC_BASE` | your R2 public/CDN base, e.g. `https://media.your-domain.com` (recommended) |
+| `R2_ACCOUNT_ID` | Cloudflare account id |
+| `R2_ACCESS_KEY_ID` | R2 token access key |
+| `R2_SECRET_ACCESS_KEY` | R2 token secret |
+| `R2_BUCKET` | e.g. `cctv-streaming` |
 | `R2_PREFIX` | optional, default `hls` |
-| `LIVEFEED_ADMIN_TOKEN` | token required to add/remove cameras in the UI. **Set it** on any public deploy. |
-| `CAMERAS_JSON` | the camera registry as a JSON array (see below). |
 
-**What the Edge Agent points at:** its Portal Connection **Ingest URL** =
-`https://<your-vercel-app>.vercel.app` (or your custom domain), **Token** =
-`EDGE_INGEST_TOKEN`. Each camera's id becomes its stream key, so it publishes to
-`.../api/edge/ingest/<cameraId>/index.m3u8` automatically.
-
-**What the portal camera list points at:** each camera's `hlsUrl` =
-`https://<your-vercel-app>/api/edge/ingest/<cameraId>/index.m3u8` (the portal
-serves/redirects that to R2/CDN).
-
-### Camera registry on Vercel
-Vercel's FS is ephemeral, so the **Add-camera UI updates only the running
-instance** and won't persist across deploys/cold-starts. For a durable list on
-Vercel, set **`CAMERAS_JSON`** (the whole registry), e.g.:
-```json
-[{"id":"cam-001","name":"Front Gate","group":"Site A",
-  "hlsUrl":"https://your-app.vercel.app/api/edge/ingest/cam-001/index.m3u8"}]
-```
-(For a mutable UI-managed registry later, back it with a DB — a small, clean
-swap behind the existing store interface. On a VM host the file store persists as
-is, so the Add-camera UI works there without `CAMERAS_JSON`.)
-
-So: **portal + ingest → Vercel = yes. Video bytes → Cloudflare R2 (+ CDN).**
+There is **no** `CAMERAS_JSON`, `EDGE_INGEST_TOKEN`, or `LIVEFEED_ADMIN_TOKEN`
+anymore — cameras live in Neon, and each camera has its own ingest token issued
+at creation.
 
 ---
 
-## 6. Quick end-to-end checklist
+## 7. End-to-end checklist
 
-1. Stand up an **ingest host** with a disk (§4A) — note its base URL + a token.
-2. Deploy the **portal** (Vercel or a VM); set `LIVEFEED_ADMIN_TOKEN`
-   (+ `CAMERAS_JSON` on Vercel).
-3. Friend **builds + installs** the Mac app (§3), links it to the ingest
-   (Portal Connection), adds his camera, clicks Start All.
-4. In the portal, **Add camera** with the matching id and the ingest HLS URL.
-5. The tile flips **ONLINE** and plays. Done.
+1. Create a **Neon** project → `DATABASE_URL`.
+2. Create a **Cloudflare R2** bucket + API token → R2 env vars.
+3. Deploy the **portal** to Vercel with all env vars above.
+4. Open the portal → **sign up** → **Add camera** → copy the Ingest URL + Token +
+   Camera ID.
+5. On the camera's machine: build/install the **Edge Agent**, paste the Portal
+   Connection (URL + Token), add the camera (Camera ID + RTSP), **Start All**.
+6. Back in the portal, the tile flips **ONLINE** and plays — visible only to that
+   signed-in user.
+
+---
+
+## 8. What's verified vs. needs your infra
+
+- **Verified here:** build + typecheck clean, 0 vulnerabilities, auth gate
+  (unauthenticated requests → 401, login page renders, ingest playback rejects
+  non-owners), all routes present.
+- **Needs your Neon + R2 to test live:** signup/login persistence, per-user
+  camera CRUD, and real video ingest→R2→playback. The code paths are typed and
+  built; they run the moment the env vars point at a real Neon DB and R2 bucket.

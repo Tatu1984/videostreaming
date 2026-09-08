@@ -8,87 +8,57 @@ interface Props {
   onSaved: () => void
 }
 
-const TOKEN_KEY = 'livefeed.adminToken'
-
-function loadToken(): string {
-  try {
-    return localStorage.getItem(TOKEN_KEY) || ''
-  } catch {
-    return ''
-  }
-}
-function saveToken(t: string) {
-  try {
-    if (t) localStorage.setItem(TOKEN_KEY, t)
-    else localStorage.removeItem(TOKEN_KEY)
-  } catch {
-    /* ignore */
-  }
+interface EdgeCreds {
+  ingestUrl: string
+  ingestToken: string
+  publishUrl: string
+  cameraId: string
 }
 
 /**
- * Token-gated "Add Camera" form. Viewing the portal needs no auth; registering a
- * camera is a write, so it sends the admin token (LIVEFEED_ADMIN_TOKEN) as a
- * Bearer header. The token is remembered in localStorage so the operator types
- * it once. If the server has no token configured, any value (or blank) works.
+ * Add a camera to the logged-in user's account. On success the server returns
+ * the camera's ONE-TIME ingest credentials (URL + token) — everything the user
+ * pastes into their Edge Agent's Portal Connection. The token is shown once and
+ * only its hash is stored, so we display it clearly and let them copy it.
  */
 export default function AddCameraDialog({ open, onClose, onSaved }: Props) {
-  const [id, setId] = useState('')
   const [name, setName] = useState('')
   const [group, setGroup] = useState('')
-  const [hlsUrl, setHlsUrl] = useState('')
-  const [note, setNote] = useState('')
-  const [token, setToken] = useState(loadToken())
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [creds, setCreds] = useState<EdgeCreds | null>(null)
 
   if (!open) return null
 
-  const reset = () => {
-    setId('')
+  function closeAll() {
     setName('')
     setGroup('')
-    setHlsUrl('')
-    setNote('')
     setError(null)
+    setCreds(null)
+    onClose()
   }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
-    if (!id.trim() || !name.trim() || !/^https?:\/\//.test(hlsUrl.trim())) {
-      setError('id, name, and an http(s) HLS URL are required')
+    if (!name.trim()) {
+      setError('name is required')
       return
     }
     setBusy(true)
-    saveToken(token.trim())
     try {
-      const res = await fetch('/api/admin/cameras', {
+      const res = await fetch('/api/cameras', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token.trim() ? { Authorization: `Bearer ${token.trim()}` } : {}),
-        },
-        body: JSON.stringify({
-          id: id.trim(),
-          name: name.trim(),
-          group: group.trim() || undefined,
-          hlsUrl: hlsUrl.trim(),
-          note: note.trim() || undefined,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), group: group.trim() || undefined }),
       })
-      if (res.status === 401) {
-        setError('Unauthorized — check the admin token.')
-        return
-      }
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        setError(body.error || `HTTP ${res.status}`)
+        setError(data.error || `HTTP ${res.status}`)
         return
       }
-      reset()
-      onSaved()
-      onClose()
+      setCreds(data.edgeAgent as EdgeCreds)
+      onSaved() // refresh the grid behind the dialog
     } catch (err) {
       setError(err instanceof Error ? err.message : 'request failed')
     } finally {
@@ -97,74 +67,82 @@ export default function AddCameraDialog({ open, onClose, onSaved }: Props) {
   }
 
   return (
-    <div className="focus-backdrop" onClick={onClose}>
-      <form className="dialog" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+    <div className="focus-backdrop" onClick={creds ? undefined : closeAll}>
+      <div className="dialog" onClick={(e) => e.stopPropagation()}>
         <div className="fhead">
-          <span className="name">Add camera</span>
-          <button type="button" className="close" onClick={onClose}>
+          <span className="name">{creds ? 'Camera added — configure your Edge Agent' : 'Add camera'}</span>
+          <button type="button" className="close" onClick={closeAll}>
             ✕
           </button>
         </div>
-        <div className="dbody">
-          <label>
-            Camera ID <span className="req">*</span>
-            <input value={id} onChange={(e) => setId(e.target.value)} placeholder="cam-001" />
-          </label>
-          <label>
-            Name <span className="req">*</span>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Front Entrance" />
-          </label>
-          <label>
-            Group
-            <input value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Entrance (optional)" />
-          </label>
-          <label>
-            HLS URL <span className="req">*</span>
-            <input
-              value={hlsUrl}
-              onChange={(e) => setHlsUrl(e.target.value)}
-              placeholder="https://ingest.example.com/api/edge/ingest/cam-001/index.m3u8"
-            />
-          </label>
-          <label>
-            Note
-            <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional" />
-          </label>
-          <label>
-            Admin token
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="Only if the server sets LIVEFEED_ADMIN_TOKEN"
-            />
-          </label>
-          {error && <div className="err">{error}</div>}
-        </div>
-        <div className="dfoot">
-          <button type="button" className="btn" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button type="submit" className="btn active" disabled={busy}>
-            {busy ? 'Saving…' : 'Add camera'}
-          </button>
-        </div>
-      </form>
+
+        {!creds ? (
+          <form onSubmit={submit}>
+            <div className="dbody">
+              <label>
+                Name <span className="req">*</span>
+                <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Front Entrance" autoFocus />
+              </label>
+              <label>
+                Group
+                <input value={group} onChange={(e) => setGroup(e.target.value)} placeholder="Optional (e.g. Home)" />
+              </label>
+              {error && <div className="err">{error}</div>}
+            </div>
+            <div className="dfoot">
+              <button type="button" className="btn" onClick={closeAll} disabled={busy}>
+                Cancel
+              </button>
+              <button type="submit" className="btn active" disabled={busy}>
+                {busy ? 'Adding…' : 'Add camera'}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div className="dbody">
+            <div className="note-box">
+              Paste these into your <b>Edge Agent → Portal Connection</b>, then add a
+              camera in the agent using the <b>Camera ID</b> below. Copy the token now —
+              it is shown only once.
+            </div>
+            <CopyRow label="Ingest URL" value={creds.ingestUrl} />
+            <CopyRow label="Token (shown once)" value={creds.ingestToken} secret />
+            <CopyRow label="Camera ID" value={creds.cameraId} />
+            <div className="dfoot">
+              <button type="button" className="btn active" onClick={closeAll}>
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
 
-/** Delete a camera by id (used from the grid tile). Returns true on success. */
-export async function deleteCamera(id: string): Promise<{ ok: boolean; error?: string }> {
-  const token = loadToken()
-  try {
-    const res = await fetch(`/api/admin/cameras?id=${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-    if (res.status === 401) return { ok: false, error: 'Unauthorized — set the admin token via Add camera.' }
-    return { ok: res.ok }
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : 'request failed' }
-  }
+function CopyRow({ label, value, secret }: { label: string; value: string; secret?: boolean }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <label>
+      {label}
+      <div className="copy-row">
+        <input readOnly value={value} type={secret ? 'text' : 'text'} onFocus={(e) => e.currentTarget.select()} />
+        <button
+          type="button"
+          className="btn"
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(value)
+              setCopied(true)
+              setTimeout(() => setCopied(false), 1500)
+            } catch {
+              /* clipboard may be blocked; the field is selectable */
+            }
+          }}
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+    </label>
+  )
 }

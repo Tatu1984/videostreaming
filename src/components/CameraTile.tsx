@@ -1,26 +1,23 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import type { CameraWithStatus } from '@/lib/types'
+import type { CameraView } from '@/lib/types'
 import HlsPlayer from './HlsPlayer'
 import StatusBadge from './StatusBadge'
-import { deleteCamera } from './AddCameraDialog'
 
 interface Props {
-  camera: CameraWithStatus
-  /** Global "play visible tiles" toggle; when false, nothing streams. */
+  camera: CameraView
   streamingEnabled: boolean
   onFocus: (id: string) => void
-  onDeleted: () => void
+  onDelete: (id: string, name: string) => void
 }
 
 /**
- * One camera in the grid. The stream attaches ONLY when the tile is both
- * on-screen (IntersectionObserver), available (live), the page/tab is visible,
- * and global streaming is enabled. Scroll it away or hide the tab and the player
- * tears down — so a wall of cameras never all decode at once.
+ * One camera in the grid. The stream attaches ONLY when the tile is on-screen,
+ * the tab is visible, the camera is live, and global streaming is on — so a wall
+ * of cameras never all decode at once.
  */
-export default function CameraTile({ camera, streamingEnabled, onFocus, onDeleted }: Props) {
+export default function CameraTile({ camera, streamingEnabled, onFocus, onDelete }: Props) {
   const ref = useRef<HTMLDivElement | null>(null)
   const [onScreen, setOnScreen] = useState(false)
   const [tabVisible, setTabVisible] = useState(true)
@@ -52,9 +49,7 @@ export default function CameraTile({ camera, streamingEnabled, onFocus, onDelete
         ) : (
           <div className="video-wrap">
             <div className="placeholder">
-              {camera.status === 'CONNECTING' || camera.status === 'RECONNECTING'
-                ? 'Connecting…'
-                : 'Offline'}
+              {camera.status === 'CONNECTING' ? 'Connecting…' : 'Offline'}
             </div>
           </div>
         )}
@@ -68,12 +63,9 @@ export default function CameraTile({ camera, streamingEnabled, onFocus, onDelete
         <button
           className="del"
           title="Remove camera"
-          onClick={async (e) => {
+          onClick={(e) => {
             e.stopPropagation()
-            if (!confirm(`Remove "${camera.name}" from the portal?`)) return
-            const res = await deleteCamera(camera.id)
-            if (!res.ok) alert(res.error || 'Delete failed')
-            else onDeleted()
+            onDelete(camera.id, camera.name)
           }}
         >
           ✕
