@@ -1,0 +1,25 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+
+# runtime camera registry (portal's own store — not committed; seed on first run)
+/data/cameras.json
+/data/cameras.json.tmp
+
+# local media store (fs backend) — HLS segments, never committed
+/.media/
+
+# env
+.env
+.env.local
+.env*.local
+!.env.example
+
+# misc
+.DS_Store
+*.tsbuildinfo
+tsconfig.tsbuildinfo

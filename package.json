@@ -1,0 +1,26 @@
+{
+  "name": "live-feed-portal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Live-feed portal for AI/CV development — view available camera feeds (no auth).",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1127.0",
+    "hls.js": "1.5.13",
+    "next": "16.3.4",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/react": "19.2.0",
+    "@types/react-dom": "19.2.0",
+    "typescript": "5.7.2"
+  }
+}
