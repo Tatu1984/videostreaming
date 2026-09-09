@@ -39,7 +39,7 @@ function conn() {
 /** Create tables + indexes if absent. Idempotent; awaited by every query path. */
 export async function ensureSchema(): Promise<void> {
   if (_schemaReady) return _schemaReady
-  _schemaReady = (async () => {
+  const run = (async () => {
     const sql = conn()
     await sql`
       CREATE TABLE IF NOT EXISTS users (
@@ -61,7 +61,14 @@ export async function ensureSchema(): Promise<void> {
     await sql`CREATE INDEX IF NOT EXISTS cameras_user_idx ON cameras(user_id)`
     await sql`CREATE INDEX IF NOT EXISTS cameras_key_idx ON cameras(ingest_key)`
   })()
-  return _schemaReady
+  // Cache the in-flight promise so concurrent requests share one schema setup,
+  // but if it REJECTS, clear the cache so a later request can retry (otherwise a
+  // one-time connection blip would poison every future request).
+  _schemaReady = run
+  run.catch(() => {
+    if (_schemaReady === run) _schemaReady = null
+  })
+  return run
 }
 
 /** Tagged-template SQL client (call after ensureSchema in query helpers). */
