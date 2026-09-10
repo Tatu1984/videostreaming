@@ -93,7 +93,9 @@ let singleton: MediaStore | null = null
 /** Resolve the configured media store (cached for the process). */
 export async function getMediaStore(): Promise<MediaStore> {
   if (singleton) return singleton
-  const backend = (process.env.MEDIA_BACKEND || '').toLowerCase()
+  // trim() so a stray space in the env value (e.g. "r2 ") can't silently fall
+  // back to the filesystem backend — a confusing failure on Vercel.
+  const backend = (process.env.MEDIA_BACKEND || '').trim().toLowerCase()
   if (backend === 'r2' || backend === 's3') {
     const { R2Store } = await import('./r2')
     singleton = new R2Store()
