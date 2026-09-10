@@ -18,12 +18,24 @@ function baseUrl(request: Request): string {
 }
 
 // GET /api/cameras → the logged-in user's cameras + live status. 401 if not auth.
+//
+// Wrapped so nothing (a DB error, or a slow/failed R2 liveness check) can hang or
+// crash the request without a response — a hung request shows in the browser as a
+// status-0 "Loading…" that never resolves. toViews() is already resilient
+// per-camera (a bad R2 read → OFFLINE, not a throw), and the R2 client has a hard
+// timeout, so the list always comes back promptly.
 export async function GET(request: Request) {
   const s = await readSession()
   if (!s) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  const cams = await listCameras(s.userId)
-  const views = await toViews(cams, baseUrl(request))
-  return NextResponse.json({ cameras: views })
+  try {
+    const cams = await listCameras(s.userId)
+    const views = await toViews(cams, baseUrl(request))
+    return NextResponse.json({ cameras: views })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown error'
+    console.error('[GET /api/cameras] failed:', msg, err)
+    return NextResponse.json({ error: `cameras failed: ${msg}` }, { status: 500 })
+  }
 }
 
 // POST /api/cameras  { name, group? } → creates a camera OWNED by the user and

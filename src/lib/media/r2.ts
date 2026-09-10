@@ -28,8 +28,16 @@ import {
   GetObjectCommand,
   DeleteObjectCommand,
 } from '@aws-sdk/client-s3'
+import { NodeHttpHandler } from '@smithy/node-http-handler'
 import type { MediaStore, GetResult, PutResult } from './store'
 import { cacheControlFor, contentTypeFor } from './store'
+
+// Hard per-request timeout for R2 calls. Without this, wrong credentials or an
+// unreachable endpoint make the AWS SDK retry with backoff for a long time,
+// which hangs the serverless function (the browser then sees a status-0 / no
+// response). A short timeout + capped retries makes R2 problems fail FAST and
+// visibly instead of hanging the whole /api/cameras request.
+const R2_TIMEOUT_MS = Number(process.env.R2_TIMEOUT_MS || 4000)
 
 function env(name: string): string {
   const v = process.env[name]
@@ -56,6 +64,12 @@ export class R2Store implements MediaStore {
         accessKeyId: env('R2_ACCESS_KEY_ID'),
         secretAccessKey: env('R2_SECRET_ACCESS_KEY'),
       },
+      // Fail fast on bad creds / unreachable R2 instead of hanging the request.
+      maxAttempts: 2,
+      requestHandler: new NodeHttpHandler({
+        connectionTimeout: R2_TIMEOUT_MS,
+        requestTimeout: R2_TIMEOUT_MS,
+      }),
     })
   }
 

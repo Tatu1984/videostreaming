@@ -21,22 +21,24 @@ function classify(body: string | null): { status: CameraStatus; available: boole
 }
 
 async function readPlaylist(ingestKey: string): Promise<string | null> {
-  const store = await getMediaStore()
-  const res = await store.get(ingestKey, 'index.m3u8')
-  if (!res.ok) return null
-  if (res.body) return new TextDecoder().decode(res.body)
-  // If the store returned a redirect URL (R2 + public base), fetch it to read
-  // the playlist text for liveness. Cheap: playlists are tiny.
-  if (res.redirectUrl) {
-    try {
+  // Fully guarded: any failure (store init, R2 error/timeout, fetch error) →
+  // null → the camera reports OFFLINE. It must NEVER throw/hang, or it would
+  // break the whole /api/cameras list for every camera.
+  try {
+    const store = await getMediaStore()
+    const res = await store.get(ingestKey, 'index.m3u8')
+    if (!res.ok) return null
+    if (res.body) return new TextDecoder().decode(res.body)
+    // R2 + public base: fetch the playlist text (tiny) to judge liveness.
+    if (res.redirectUrl) {
       const r = await fetch(res.redirectUrl, { cache: 'no-store' })
       if (!r.ok) return null
       return await r.text()
-    } catch {
-      return null
     }
+    return null
+  } catch {
+    return null
   }
-  return null
 }
 
 /** Turn a DB camera row into the owner-facing view with live status. */
