@@ -78,7 +78,15 @@ export default function HlsPlayer({ src, active, autoPlay = true, className, onE
       lowLatencyMode: true,
       backBufferLength: 10,
       maxBufferLength: 15,
-      liveSyncDurationCount: 3,
+      // Stay close to the live edge. The origin keeps a ~20s window plus a few
+      // extra segments before deleting; the player must not drift so far back
+      // that it requests a segment already gone (a 404, then a stall/jump-back).
+      // liveSyncDuration pins the target latency; maxLiveSyncPlaybackRate lets the
+      // player speed up slightly to catch up when it falls behind rather than
+      // sliding toward the delete edge.
+      liveSyncDuration: 6,
+      liveMaxLatencyDuration: 20,
+      maxLiveSyncPlaybackRate: 1.5,
       manifestLoadingTimeOut: 8000,
       // Recover gracefully from transient network blips rather than dying.
       fragLoadingMaxRetry: 6,
